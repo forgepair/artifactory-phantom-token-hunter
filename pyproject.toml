@@ -1,0 +1,14 @@
+[project]
+name = "artifactory-phantom-token-hunter"
+version = "0.1.0"
+description = "Retro-hunting tool for JFrog Artifactory admin tokens minted without a prior authenticated session (CVE-2026-82329 / THORCollective HEARTH H294)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

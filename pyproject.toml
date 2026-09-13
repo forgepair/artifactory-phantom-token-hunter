@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "artifactory-phantom-token-hunter"
 version = "0.1.0"
@@ -9,6 +13,12 @@ dependencies = []
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+
+[project.scripts]
+phantom-hunter = "phantom_hunter.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/phantom_hunter"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

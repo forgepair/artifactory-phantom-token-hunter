@@ -86,21 +86,101 @@ this from a proof-of-mechanism script into an actual test suite:
 
 All 9 pass (`python -m pytest tests/ -v`).
 
+## The CLI tool
+
+`src/phantom_hunter/` is a real, installable CLI (`phantom-hunter`, via
+`[project.scripts]`) that runs the H294 correlation against actual JFrog log
+files instead of the synthetic single-event-stream model in `detector.py`.
+
+**Built around JFrog's own documented log formats, researched before writing
+any parser** (closing the exact gap the original proof-of-mechanism flagged
+as unverified):
+
+- **Audit Trail Log** (`docs.jfrog.com/administration/docs/audit-trail-log`)
+  -- pipe-delimited, 9 fields (`Date|Trace ID|User IP|User|Logged
+  Principal|Entity Name|Event Type|Event|Data Changed`). This is the real
+  source of token-*creation* events: `Event == TKN`, `Event Type == C`.
+- **Access Log** (`docs.jfrog.com/administration/docs/access-log`) --
+  bracketed free-text (`Timestamp [Trace Id] [Response Action] ... for
+  User/IP`). This is the real source of `LOGIN` events, used for "prior
+  authenticated session." JFrog's own docs are internally inconsistent about
+  the timestamp format (the field spec claims RFC-3339; the docs' own sample
+  line uses comma-millis, no `T`/`Z`) -- the parser accepts both rather than
+  silently dropping real lines in one of the two shapes.
+- **router-request.log** -- pipe-delimited, 11 fields (`Timestamp|Trace
+  ID|Remote IP|Username|Method|URL|Status|Req Len|Resp Len|Duration|User
+  Agent`). This is the router-fronted API traffic log (distinct from the
+  per-repository `artifactory-request.log`, which logs a *repository name*
+  in that column instead of an IP) -- it's the one that actually captures
+  calls to `/access/api/v1/tokens` and `/api/security/*`, so it's the real
+  source for both the mint call itself and the enumeration burst.
+
+**One confirmed, honest gap**: JFrog's docs confirm the Audit Trail Log
+records token creation but never publish a sample `Data Changed` payload for
+it, so "is this token admin-scoped" (`models.py`'s `looks_admin_scoped`) is
+a documented-but-unverified heuristic (substring match on the scope string),
+not a confirmed field mapping.
+
+**A CI-identity allowlist** (`baseline.py`) closes the other gap the
+original proof-of-mechanism left open: H294's own author-named top
+false-positive mitigation ("baseline [CI service principals] and suppress
+them explicitly") is now a real mechanism (`--allowlist allowlist.json`),
+not just an implicit "has this identity ever logged in before" heuristic.
+
+**A real bug found by testing, not review**: the login-line regex's IP
+character class greedily swallowed the log line's trailing period
+(`192.168.1.44.` parsed as IP `192.168.1.44.`, not `192.168.1.44`) --
+caught by two failing tests in `tests/test_parsers.py`, fixed with an
+explicit `.rstrip(".")`.
+
+**Verified end-to-end as a real subprocess**, not just via in-process test
+calls -- `python -m phantom_hunter.cli --audit-log ... --access-log ...
+--request-log ... --allowlist ...` against real-shaped log files on disk
+produces correct JSON verdicts and a real exit code (0/1/2 by highest
+severity found, for use in a pipeline).
+
+37/37 tests passing (`python -m pytest tests/ -v`): the original 9 plus 28
+new tests across parsers (anchored to JFrog's own real documented request-log
+sample line), the enumeration classifier (including the important negative
+case -- the mint's own `/access/api/v1/tokens` call must never count as its
+own enumeration evidence), the allowlist, the full correlation engine, and
+two CLI end-to-end tests.
+
+### Usage
+
+```
+python -m pip install -e .
+phantom-hunter \
+  --audit-log /path/to/artifactory-audit-trail.log \
+  --access-log /path/to/artifactory-access.log \
+  --request-log /path/to/router-request.log \
+  --allowlist ./ci-allowlist.json \
+  --window-minutes 3
+```
+
+`ci-allowlist.json` shape:
+
+```json
+[{"user": "ci-service-account", "ip_prefix": "10.0.5."}]
+```
+
 ## What's still needed before this is a real tool
 
-- **Not yet tested against a real Artifactory access log.** All testing so
-  far is against synthetic data shaped like the documented log fields -- the
-  actual field names/format of JFrog's real Access service logs and audit
-  trail have not been pulled from JFrog's own documentation and cross-checked
-  against this script's assumptions.
-- **Enumeration/account-creation event detection is not yet implemented** --
-  the proof-of-mechanism assumes these events are already classified and fed
-  in; a real tool needs to parse raw Artifactory/reverse-proxy logs and
-  classify hits to `/api/security/users` etc. as "enumeration" itself.
-- **CI-service baselining/suppression** (the author's own top false-positive
-  mitigation) is not yet built -- this needs an allowlist mechanism for
-  known-stable service identities, not just the "has any prior login" check
-  currently implemented.
+- **Still not tested against a real, captured Artifactory log file.** The
+  parsers are now built against JFrog's own documented field grammar
+  (including one real sample line for the request log), but every log line
+  in this project's tests is still hand-constructed to match that
+  documentation -- none has been cross-checked against actual output from a
+  running Artifactory instance, which could easily surface format drift the
+  docs don't mention.
+- **Admin-scope detection is a documented-but-unverified heuristic**, not a
+  confirmed field mapping -- see "The CLI tool" above. A real deployment
+  needs a live Audit Trail Log sample for a token-creation event to replace
+  the substring-match heuristic with an actual field.
+- **CI-service baselining now exists as a mechanism** (`--allowlist`), but
+  ships with no real seed data -- a real deployment has to populate its own
+  allowlist from its own known service accounts; nothing here discovers them
+  automatically.
 - **Demand remains unconfirmed.** No named practitioner has been found
   publicly asking for this exact tool to exist -- the case for building it
   rests on the hypothesis's own severity framing and the absence of any
